@@ -1,0 +1,50 @@
+#!/bin/bash
+
+DEFAULT_CONTAINER_URL_BASE="quay.io/quobyte/pod-killer"
+CONTAINER_URL_BASE="${CONTAINER_URL_BASE:-$DEFAULT_CONTAINER_URL_BASE}"
+
+container_build_and_push(){
+    if [[ -z "${CONTAINER_URL_BASE}" ]]; then
+      echo "FAILURE: container base url should not be empty"
+    fi
+    VERSION=$1
+    if [[ -z "${VERSION}" || "{$VERSION}" == *\ * ]]; then
+      echo "FAILURE: ${VERSION} is not a valid version string. Version must not be empty or should not contain any spaces"
+    fi
+    IMAGE="${CONTAINER_URL_BASE}:${VERSION}"
+    echo 'Building docker image and push to ${IMAGE}'
+    sudo docker build -t quobyte-csi -f Dockerfile .
+    sudo docker run -it quobyte-csi
+    CSI_RUN_ID="$(sudo docker ps -l | grep 'quobyte-csi' | awk '{print $1}')"
+    echo "Pushing $CSI_RUN_ID to ${IMAGE}"
+    sudo docker commit "$CSI_RUN_ID" "$IMAGE"
+    sudo docker push "$IMAGE"
+    push_succeeded="$?"
+    if [[ ${push_succeeded} -ne 0 ]]; then
+      echo 'FAILURE: container image ${IMAGE} cannot be pushed'
+      echo 'Please fix the reported issues and retry'
+      exit 1
+    fi
+}
+
+
+if [[ "$1" = '-h' || "$1" = '--help' ]]; then
+  echo './build                     Builds the executable'
+  echo './build container <tag>"    Builds and pushes the container to repo'
+  ehco '                                         for the release'
+  echo "Example: ./build container v0.1.0"
+  exit 0
+else
+  echo 'Building executable'
+  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o pod_killer
+  build_success="$?"
+  if [[ ${build_success} -eq 0 ]]; then
+    echo "Build is successful"
+  else
+    echo "Build FAILURE"
+    exit 1
+  fi
+  if [[ "${build_success}" -eq 0 && "$1" == "container" ]]; then
+    container_build_and_push $2
+  fi
+fi
