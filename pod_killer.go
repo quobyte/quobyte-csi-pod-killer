@@ -66,7 +66,7 @@ func (podKiller *PodKiller) Run(monitoringInterval *time.Duration) {
 func (podKiller *PodKiller) filterProvisionerPVs(pvs *v1.PersistentVolumeList) map[string]v1.PersistentVolume {
 	provisionerPVs := make(map[string]v1.PersistentVolume)
 	for _, pv := range pvs.Items {
-		if pv.Spec.CSI.Driver == podKiller.CSIProvisionerName {
+    if pv.Spec.CSI != nil &&  pv.Spec.CSI.Driver == podKiller.CSIProvisionerName {
 			provisionerPVs[pv.Name] = pv
 		}
 	}
