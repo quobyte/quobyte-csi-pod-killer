@@ -31,7 +31,7 @@ container_build_and_push(){
 if [[ "$1" = '-h' || "$1" = '--help' ]]; then
   echo './build                     Builds the executable'
   echo './build container <tag>"    Builds and pushes the container to repo'
-  ehco '                                         for the release'
+  echo '                                         for the release'
   echo "Example: ./build container v0.1.0"
   exit 0
 else
