@@ -82,7 +82,7 @@ func (podKiller *PodKiller) hasInaccessibleQuobyteVolumes(pod v1.Pod, pvs map[st
 		if err != nil {
 			klog.V(2).Infof("CSI volume mount path for the pod %s/%s (%s) not found due to %v", pod.Namespace, pod.Name, string(pod.UID), err)
 		} else {
-			klog.V(2).Infof("Pod %s/%s (namespace/name) with unique id %s does not has any CSI volumes", pod.Namespace, pod.Name, string(pod.UID))
+			klog.V(2).Infof("Pod %s/%s (namespace/name) with unique id %s do not have any CSI volumes", pod.Namespace, pod.Name, string(pod.UID))
 		}
 		return false
 	}
