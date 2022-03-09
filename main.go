@@ -12,11 +12,15 @@ import (
 	"k8s.io/klog"
 )
 
+/*
+* kubeconfig is only reqired to run pod killer as a binary
+* example: ./pod_killer --kubeconfig ~/.kube/config --driver_name="csi.quobyte.com" --node_name="k8s-1" -v=3
+ */
 var (
-	kubeconfig         = flag.String("kubeconfig", "", "kubeconfig file not found")
+	kubeconfig         = flag.String("kubeconfig", "", "kubeconfig file (if not provided, uses in-cluster configuration)")
 	monitoringInterval = flag.Duration("monitoring_interval", 5*time.Second, "monitoring interval")
-	csiProvisionerName = flag.String("driver_name", "", "CSI provisioner name")
-	nodeName           = flag.String("node_name", "", "Node name from the pod deployment")
+	csiProvisionerName = flag.String("driver_name", "", "CSI provisioner name (must match the CSI provisioner name)")
+	nodeName           = flag.String("node_name", "", "K8S node name")
 )
 
 func main() {

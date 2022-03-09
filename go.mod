@@ -9,6 +9,7 @@ replace (
 
 require (
 	golang.org/x/net v0.0.0-20200707034311-ab3426394381
+	golang.org/x/sys v0.0.0-20220307203707-22a9840ba4d7 // indirect
 	golang.org/x/time v0.0.0-20201208040808-7e3f01d25324 // indirect
 	k8s.io/api v0.20.2
 	k8s.io/apimachinery v0.19.2
