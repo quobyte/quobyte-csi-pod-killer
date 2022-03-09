@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"os/exec"
+	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -39,12 +40,12 @@ func (podKiller *PodKiller) Run(monitoringInterval *time.Duration) {
 				provisionerPVs := podKiller.filterProvisionerPVs(pvs)
 				for _, pod := range pods.Items {
 					if pod.Spec.NodeName != *nodeName {
-						klog.V(2).Infof("pod %s/%s is not running on %s", pod.Namespace, pod.Name, *nodeName)
+						klog.V(2).Infof("pod %s/%s is not running on node %s", pod.Namespace, pod.Name, *nodeName)
 						continue
 					}
 
 					if podKiller.hasInaccessibleQuobyteVolumes(pod, provisionerPVs) {
-						klog.Infof("trigger delete for pod %s/%s due to inaccessible Quobyte CSI volume", pod.Namespace, pod.Name)
+						klog.Infof("triggering delete for pod %s/%s due to inaccessible Quobyte CSI volume", pod.Namespace, pod.Name)
 						gracePeriod := int64(0)
 						if err := podKiller.Clientset.CoreV1().Pods(pod.Namespace).Delete(context.TODO(), pod.Name, metav1.DeleteOptions{
 							GracePeriodSeconds: &gracePeriod,
@@ -66,7 +67,7 @@ func (podKiller *PodKiller) Run(monitoringInterval *time.Duration) {
 func (podKiller *PodKiller) filterProvisionerPVs(pvs *v1.PersistentVolumeList) map[string]v1.PersistentVolume {
 	provisionerPVs := make(map[string]v1.PersistentVolume)
 	for _, pv := range pvs.Items {
-    if pv.Spec.CSI != nil &&  pv.Spec.CSI.Driver == podKiller.CSIProvisionerName {
+		if pv.Spec.CSI != nil && pv.Spec.CSI.Driver == podKiller.CSIProvisionerName {
 			provisionerPVs[pv.Name] = pv
 		}
 	}
@@ -81,7 +82,7 @@ func (podKiller *PodKiller) hasInaccessibleQuobyteVolumes(pod v1.Pod, pvs map[st
 		if err != nil {
 			klog.V(2).Infof("CSI volume mount path for the pod %s/%s (%s) not found due to %v", pod.Namespace, pod.Name, string(pod.UID), err)
 		} else {
-			klog.V(2).Infof("CSI volume mount path for the pod %s/%s (%s) not found", pod.Namespace, pod.Name, string(pod.UID))
+			klog.V(2).Infof("Pod %s/%s (namespace/name) with unique id %s do not have any CSI volumes", pod.Namespace, pod.Name, string(pod.UID))
 		}
 		return false
 	}
@@ -93,12 +94,13 @@ func (podKiller *PodKiller) hasInaccessibleQuobyteVolumes(pod v1.Pod, pvs map[st
 	}
 	for _, csiPVName := range csiVolumes {
 		if _, ok := pvs[csiPVName]; ok { // quobyte CSI volume
-			csiVolumePath := podVolumesPath + "/" + csiPVName + "/mount"
-			klog.V(2).Infof("accessing xattr from %s to determine the mount availability", csiVolumePath)
-			opts := []string{"-n", "quobyte.statuspage_port", csiVolumePath}
-			if _, err := exec.Command("getfattr", opts...).CombinedOutput(); err != nil {
-				klog.Errorf("could not access CSI volume %s for pod %s/%s (%s) due to %v.", csiVolumePath, pod.Namespace, pod.Name, string(pod.UID), err)
-				return true
+			var stat unix.Stat_t
+			quobyteCsiVolumePath := podVolumesPath + "/" + csiPVName + "/mount"
+			if err = unix.Stat(quobyteCsiVolumePath, &stat); err != nil {
+				klog.V(2).Infof("Encountered error %d executing stat on %s", err.(syscall.Errno), quobyteCsiVolumePath)
+				if err.(syscall.Errno) == unix.ENOTCONN || err.(syscall.Errno) == unix.ENOENT {
+					return true
+				}
 			}
 		}
 	}
