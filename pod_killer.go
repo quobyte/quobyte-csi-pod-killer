@@ -44,6 +44,11 @@ func (podKiller *PodKiller) Run(monitoringInterval *time.Duration) {
 						continue
 					}
 
+					if pod.Status.Phase == v1.PodPending {
+						klog.V(2).Infof("pod %s/%s is in pending state. Skipping pod.", pod.Namespace, pod.Name)
+						continue
+					}
+
 					if podKiller.hasInaccessibleQuobyteVolumes(pod, provisionerPVs) {
 						klog.Infof("triggering delete for pod %s/%s due to inaccessible Quobyte CSI volume", pod.Namespace, pod.Name)
 						gracePeriod := int64(0)
