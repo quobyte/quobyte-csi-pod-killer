@@ -21,6 +21,7 @@ var (
 	monitoringInterval = flag.Duration("monitoring_interval", 5*time.Second, "monitoring interval")
 	csiProvisionerName = flag.String("driver_name", "", "CSI provisioner name (must match the CSI provisioner name)")
 	nodeName           = flag.String("node_name", "", "K8S node name")
+	parallelKills      = flag.Int("parallel_kills", 10, "Kill 'n' pods with stale mount points")
 )
 
 func main() {
@@ -60,7 +61,7 @@ func main() {
 		klog.Errorf("Fatal: Failed to create rest client due to %v.", err)
 		os.Exit(1)
 	}
-	podKiller := newPodKiller(clientset, *csiProvisionerName, *nodeName)
+	podKiller := newPodKiller(clientset, *csiProvisionerName, *nodeName, *parallelKills)
 	klog.Infof("start monitoring of pods every %s on node %s for csi provisioner %s", *monitoringInterval, *nodeName, *csiProvisionerName)
 	podKiller.Run(monitoringInterval)
 }
