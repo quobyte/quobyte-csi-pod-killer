@@ -29,11 +29,6 @@ type PodEntry struct {
 	phase     v1.PodPhase
 }
 
-type StaleMountWithNodeName struct {
-	StaleMount
-	nodeName string
-}
-
 var podCacheMux sync.Mutex
 var podsByUid map[string]PodEntry
 
@@ -72,7 +67,7 @@ func (podsAndPVsCache *PodsAndPVsCache) registerPodsWatch() {
 	})
 	factory.Start(stopCh)
 	if !cache.WaitForCacheSync(stopCh, podInformer.HasSynced, pvInformer.HasSynced) {
-		klog.Error("timed out waiting for caches to sync")
+		klog.Error("Timed out waiting for caches to sync")
 		runtime.HandleError(fmt.Errorf("timed out waiting for caches to sync"))
 		return
 	}
@@ -84,7 +79,7 @@ func onAddPod(addedPod interface{}) {
 	podCacheMux.Lock()
 	podsByUid[string(pod.UID)] = PodEntry{name: pod.Name, namespace: pod.Namespace, phase: pod.Status.Phase}
 	podCacheMux.Unlock()
-	klog.Infof("pod %s/%s with uid %v and status %v is added to cache", pod.Namespace, pod.Name, pod.UID, pod.Status.Phase)
+	klog.Infof("Pod %s/%s with uid %v and status %v is added to cache", pod.Namespace, pod.Name, pod.UID, pod.Status.Phase)
 }
 
 func (podsAndPVsCache *PodsAndPVsCache) onAddPV(addedPV interface{}) {
@@ -126,7 +121,7 @@ func onDeletePod(deletedPod interface{}) {
 	podCacheMux.Lock()
 	delete(podsByUid, string(pod.UID))
 	podCacheMux.Unlock()
-	klog.Infof("pod %s/%s with uid %v is removed from the cache", pod.Namespace, pod.Name, pod.UID)
+	klog.Infof("Pod %s/%s with uid %v is removed from the cache", pod.Namespace, pod.Name, pod.UID)
 }
 
 func (podsAndPVsCache *PodsAndPVsCache) onDeletePV(deletedPV interface{}) {
@@ -154,7 +149,7 @@ func (podsAndPVsCache *PodsAndPVsCache) launchControllerApi() {
 		handler(w, r, podsAndPVsCache.CsiDriverName)
 	})
 	if err := http.ListenAndServe(":8080", nil); err != nil {
-		klog.Fatalf("failed server start due to %v", err)
+		klog.Fatalf("Failed server start due to %v", err)
 	}
 }
 
@@ -174,14 +169,14 @@ func handler(w http.ResponseWriter, req *http.Request, csiDriverName string) {
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		klog.Errorf("failed reading request body due to %s", err)
+		klog.Errorf("Failed reading request body due to %s", err)
 		return
 	}
 	var request ResolvePodsRequest
 	err = json.Unmarshal(body, &request)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		klog.Errorf("failed converting request body to resolve pods request due to %s", err)
+		klog.Errorf("Failed converting request body to resolve pods request due to %s", err)
 		return
 	}
 	if request.CsiDriverName != csiDriverName {

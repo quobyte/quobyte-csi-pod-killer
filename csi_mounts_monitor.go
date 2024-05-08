@@ -27,6 +27,9 @@ const (
 	KUBELET_POD_CSI_PVC_MOUNT = KUBELET_POD_CSI_MOUNTS + "%s/mount"
 )
 
+var podDeduplicatorMux sync.Mutex
+var podDeduplicator map[string]bool
+
 type CsiMountMonitor struct {
 	csiDriverName          string
 	clientSet              *kubernetes.Clientset
@@ -38,6 +41,7 @@ type CsiMountMonitor struct {
 }
 
 func (csiMountMonitor *CsiMountMonitor) Run() {
+	podDeduplicator = make(map[string]bool)
 	// Keep Queue >= 2 * podUidResolveBatchSize so that we batch resolve pod uid calls
 	staleMountsChannel := make(chan StaleMount, csiMountMonitor.podUidResolveBatchSize*3)
 	resolvedPodsChannel := make(chan ResolvedPod, csiMountMonitor.parallelKills*3)
@@ -59,8 +63,11 @@ func (csiMountMonitor *CsiMountMonitor) deletePodWithStaleMount(resolvedPodsChan
 			GracePeriodSeconds: &gracePeriod,
 			Preconditions:      &metav1.Preconditions{UID: (*types.UID)(&pod.Uid)},
 		}); err != nil {
-			klog.Errorf("unable to delete pod %s/%s (uid: %s) due to %v", pod.Namespace, pod.Name, pod.Uid, err)
+			klog.Errorf("Unable to delete pod %s/%s (uid: %s) due to %v", pod.Namespace, pod.Name, pod.Uid, err)
 		}
+		podDeduplicatorMux.Lock()
+		delete(podDeduplicator, pod.Uid)
+		podDeduplicatorMux.Unlock()
 	}
 }
 
@@ -83,7 +90,7 @@ func (csiMountMonitor *CsiMountMonitor) resolvePodsWithStaleMounts(
 			klog.Errorf("Could not resolve pod(s) to name/namespace due to %s. Will retry later again.", err)
 		} else {
 			for _, pod := range resolvedPods.Pods {
-				klog.Infof("resolved pod uid %s to %s/%s", pod.Uid, pod.Namespace, pod.Name)
+				klog.Infof("Resolved pod uid %s to %s/%s", pod.Uid, pod.Namespace, pod.Name)
 				resolvedPodsChannel <- pod
 			}
 		}
@@ -129,14 +136,20 @@ func (csiMountMonitor *CsiMountMonitor) resolvePods(staleMounts []StaleMount) (R
 func (csiMountMonitor *CsiMountMonitor) walkAndDetectStaleMounts(staleMountsChannel chan<- StaleMount) {
 	for {
 		if pods, err := getChildDirectoryNames(KUBELET_PODS_MOUNT_PATH); err != nil {
-			klog.Errorf("failed listing kubelet pod mounts due to %s", err)
+			klog.Errorf("Failed listing kubelet pod mounts due to %s", err)
 		} else {
+			podDeduplicatorMux.Lock()
 			for _, podUid := range pods {
+				if _, ok := podDeduplicator[podUid]; ok {
+					continue // Already queued this pod for deletion - skip in this round
+				}
 				stalePVMounts := getStalePVNames(podUid)
 				if len(stalePVMounts) > 0 {
+					podDeduplicator[podUid] = true
 					staleMountsChannel <- StaleMount{PodUid: podUid, PvNames: stalePVMounts}
 				}
 			}
+			podDeduplicatorMux.Unlock()
 		}
 		time.Sleep(csiMountMonitor.monitoringInterval)
 	}

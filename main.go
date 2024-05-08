@@ -16,8 +16,8 @@ import (
 type Role string
 
 const (
-	Cache Role = "cache"
-	Monitor    Role = "monitor" // runs on each node and monitors CSI mount points
+	Cache   Role = "cache"
+	Monitor Role = "monitor" // runs on each node and monitors CSI mount points
 )
 
 /*
@@ -26,9 +26,8 @@ const (
  */
 var (
 	// common for both monitor and controller
-	role Role
-	kubeconfig         = flag.String("kubeconfig", "", "kubeconfig file (if not provided, uses in-cluster configuration)")
-
+	role       Role
+	kubeconfig = flag.String("kubeconfig", "", "kubeconfig file (if not provided, uses in-cluster configuration)")
 
 	// For pod killer controller
 	csiProvisionerName = flag.String("driver_name", "", "CSI provisioner name (must match the CSI provisioner name)")
@@ -69,24 +68,24 @@ func main() {
 	if *kubeconfig != "" {
 		config, err = clientcmd.BuildConfigFromFlags("", *kubeconfig)
 		if err != nil {
-			klog.Fatalf("could not create k8s API configuration for the given kubeconfig %v.", err)
+			klog.Fatalf("Could not create k8s API configuration for the given kubeconfig %v.", err)
 		}
 	} else {
 		config, err = rest.InClusterConfig()
 		if err != nil {
-			klog.Fatalf("failed to retrieve in-cluster configuration due to %v.", err)
+			klog.Fatalf("Failed to retrieve in-cluster configuration due to %v.", err)
 		}
 	}
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		klog.Fatalf("failed to create rest client due to %v.", err)
+		klog.Fatalf("Failed to create rest client due to %v.", err)
 	}
 
 	if role == Cache {
 		podsAndPVsCache := newPodsAndPVsCache(
 			clientset,
 			*csiProvisionerName)
-			podsAndPVsCache.Run()
+		podsAndPVsCache.Run()
 	} else if role == Monitor {
 		if len(*nodeName) == 0 {
 			klog.Fatal("--node_name is required")
@@ -94,15 +93,15 @@ func main() {
 		if len(*serviceUrl) == 0 {
 			klog.Fatal("--service_url is required")
 		}
-		klog.Infof("start monitoring of stale pod mounts every %s on node %s and report to %s",
+		klog.Infof("Start monitoring of stale pod mounts every %s on node %s and use %s to resolve pod name/namespace",
 			*monitoringInterval, *nodeName, *serviceUrl)
 		monitor := &CsiMountMonitor{
-			clientSet: clientset,
-			csiDriverName: *csiProvisionerName,
-			nodeName: *nodeName,
+			clientSet:          clientset,
+			csiDriverName:      *csiProvisionerName,
+			nodeName:           *nodeName,
 			monitoringInterval: *monitoringInterval,
-			controller_url: *serviceUrl,
-			parallelKills: *parallelKills,
+			controller_url:     *serviceUrl,
+			parallelKills:      *parallelKills,
 		}
 		monitor.Run()
 	} else {
