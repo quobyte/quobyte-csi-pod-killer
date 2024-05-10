@@ -11,6 +11,8 @@ container_build_and_push(){
     if [[ -z "${VERSION}" || "{$VERSION}" == *\ * ]]; then
       echo "FAILURE: ${VERSION} is not a valid version string. Version must not be empty or should not contain any spaces"
     fi
+    git tag "${VERSION}"
+    git push origin master --tags
     IMAGE="${CONTAINER_URL_BASE}:${VERSION}"
     echo "Building docker image and push to ${IMAGE}"
     sudo docker build -t quobyte-csi -f Dockerfile .
