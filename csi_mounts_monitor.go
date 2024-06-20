@@ -87,12 +87,27 @@ func (csiMountMonitor *CsiMountMonitor) resolvePodsWithStaleMounts(
 			}
 		}
 		if resolvedPods, err := csiMountMonitor.resolvePods(batch); err != nil {
+			podDeduplicatorMux.Lock()
+			for _, staleMount := range batch {  // remove and let it be requeued for resolution
+				delete(podDeduplicator, staleMount.PodUid)
+			}
+			podDeduplicatorMux.Unlock()
 			klog.Errorf("Could not resolve pod(s) to name/namespace due to %s. Will retry later again.", err)
 		} else {
+			resolvedPodUids := make(map[string]bool)
 			for _, pod := range resolvedPods.Pods {
 				klog.Infof("Resolved pod uid %s to %s/%s", pod.Uid, pod.Namespace, pod.Name)
 				resolvedPodsChannel <- pod
+				resolvedPodUids[pod.Uid] = true
 			}
+			podDeduplicatorMux.Lock()
+			for _, staleMount := range batch {
+				if _, ok := resolvedPodUids[staleMount.PodUid]; !ok {
+					// Pod was not resolved, so let it be requeued again
+					delete(podDeduplicator, staleMount.PodUid)
+				}
+			}
+			podDeduplicatorMux.Unlock()
 		}
 	}
 }
