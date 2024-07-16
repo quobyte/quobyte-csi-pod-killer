@@ -25,6 +25,8 @@ const (
 	KUBELET_POD_CSI_MOUNTS = KUBELET_PODS_MOUNT_PATH + "%s/volumes/kubernetes.io~csi/"
 	// /var/lib/kubelet/pods/<pod-uid>/volumes/kubernetes.io~csi/<pv-name>/mount
 	KUBELET_POD_CSI_PVC_MOUNT = KUBELET_POD_CSI_MOUNTS + "%s/mount"
+	QUOBYTE_CLIENT_X_ATTR = "quobyte.statuspage_port"
+	CLIENT_X_ATTR_VALUE_SIZE = 100
 )
 
 var podDeduplicatorMux sync.Mutex
@@ -186,10 +188,10 @@ func getStalePVNames(podUid string) []string {
 	}
 	klog.V(5).Infof("Loaded %v PV Names from the path %s", csiPvNames, podVolumesPath)
 	var stalePvNames []string
+	xattr_buf := make([]byte, CLIENT_X_ATTR_VALUE_SIZE)
 	for _, csiPVName := range csiPvNames {
-		var stat unix.Stat_t
 		quobyteCsiVolumePath := fmt.Sprintf(KUBELET_POD_CSI_PVC_MOUNT, podUid, csiPVName)
-		if err = unix.Stat(quobyteCsiVolumePath, &stat); err != nil {
+		if _, err = unix.Getxattr(quobyteCsiVolumePath, QUOBYTE_CLIENT_X_ATTR, xattr_buf); err != nil {
 			klog.V(2).Infof("Encountered error %d executing stat on %s", err.(syscall.Errno), quobyteCsiVolumePath)
 			if err.(syscall.Errno) == unix.ENOTCONN || err.(syscall.Errno) == unix.ENOENT {
 				stalePvNames = append(stalePvNames, csiPVName)
