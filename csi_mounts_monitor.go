@@ -25,12 +25,36 @@ const (
 	KUBELET_POD_CSI_MOUNTS = KUBELET_PODS_MOUNT_PATH + "%s/volumes/kubernetes.io~csi/"
 	// /var/lib/kubelet/pods/<pod-uid>/volumes/kubernetes.io~csi/<pv-name>/mount
 	KUBELET_POD_CSI_PVC_MOUNT = KUBELET_POD_CSI_MOUNTS + "%s/mount"
-	QUOBYTE_CLIENT_X_ATTR = "quobyte.statuspage_port"
-	CLIENT_X_ATTR_VALUE_SIZE = 100
+	QUOBYTE_CLIENT_X_ATTR     = "quobyte.statuspage_port"
+	CLIENT_X_ATTR_VALUE_SIZE  = 100
 )
 
-var podDeduplicatorMux sync.Mutex
-var podDeduplicator map[string]bool
+type podDeletionQueue struct {
+	podsMux sync.Mutex
+	pods    map[string]bool
+}
+
+func NewPodDeletionQueue() *podDeletionQueue {
+	return &podDeletionQueue{
+		pods: make(map[string]bool),
+	}
+}
+
+func (podCache *podDeletionQueue) add(podUid string) bool {
+	podCache.podsMux.Lock()
+	defer podCache.podsMux.Unlock()
+	if _, ok := podCache.pods[podUid]; ok {
+		return false // not added
+	}
+	podCache.pods[podUid] = true
+	return true
+}
+
+func (podCache *podDeletionQueue) delete(podUid string) {
+	podCache.podsMux.Lock()
+	defer podCache.podsMux.Unlock()
+	delete(podCache.pods, podUid)
+}
 
 type CsiMountMonitor struct {
 	csiDriverName          string
@@ -40,10 +64,10 @@ type CsiMountMonitor struct {
 	monitoringInterval     time.Duration
 	parallelKills          int
 	podUidResolveBatchSize int
+	podDeletionQueue       *podDeletionQueue
 }
 
 func (csiMountMonitor *CsiMountMonitor) Run() {
-	podDeduplicator = make(map[string]bool)
 	// Keep Queue >= 2 * podUidResolveBatchSize so that we batch resolve pod uid calls
 	staleMountsChannel := make(chan StaleMount, csiMountMonitor.podUidResolveBatchSize*3)
 	resolvedPodsChannel := make(chan ResolvedPod, csiMountMonitor.parallelKills*3)
@@ -67,9 +91,7 @@ func (csiMountMonitor *CsiMountMonitor) deletePodWithStaleMount(resolvedPodsChan
 		}); err != nil {
 			klog.Errorf("Unable to delete pod %s/%s (uid: %s) due to %v", pod.Namespace, pod.Name, pod.Uid, err)
 		}
-		podDeduplicatorMux.Lock()
-		delete(podDeduplicator, pod.Uid)
-		podDeduplicatorMux.Unlock()
+		csiMountMonitor.podDeletionQueue.delete(pod.Uid)
 	}
 }
 
@@ -89,11 +111,9 @@ func (csiMountMonitor *CsiMountMonitor) resolvePodsWithStaleMounts(
 			}
 		}
 		if resolvedPods, err := csiMountMonitor.resolvePods(batch); err != nil {
-			podDeduplicatorMux.Lock()
-			for _, staleMount := range batch {  // remove and let it be requeued for resolution
-				delete(podDeduplicator, staleMount.PodUid)
+			for _, staleMount := range batch { // remove and let it be requeued for resolution
+				csiMountMonitor.podDeletionQueue.delete(staleMount.PodUid)
 			}
-			podDeduplicatorMux.Unlock()
 			klog.Errorf("Could not resolve pod(s) to name/namespace due to %s. Will retry later again.", err)
 		} else {
 			resolvedPodUids := make(map[string]bool)
@@ -102,14 +122,12 @@ func (csiMountMonitor *CsiMountMonitor) resolvePodsWithStaleMounts(
 				resolvedPodsChannel <- pod
 				resolvedPodUids[pod.Uid] = true
 			}
-			podDeduplicatorMux.Lock()
-			for _, staleMount := range batch {
+			for _, staleMount := range batch { // pod killer cache may not have entry yet
 				if _, ok := resolvedPodUids[staleMount.PodUid]; !ok {
 					// Pod was not resolved, so let it be requeued again
-					delete(podDeduplicator, staleMount.PodUid)
+					csiMountMonitor.podDeletionQueue.delete(staleMount.PodUid)
 				}
 			}
-			podDeduplicatorMux.Unlock()
 		}
 	}
 }
@@ -155,18 +173,15 @@ func (csiMountMonitor *CsiMountMonitor) walkAndDetectStaleMounts(staleMountsChan
 		if pods, err := getChildDirectoryNames(KUBELET_PODS_MOUNT_PATH); err != nil {
 			klog.Errorf("Failed listing kubelet pod mounts due to %s", err)
 		} else {
-			podDeduplicatorMux.Lock()
 			for _, podUid := range pods {
-				if _, ok := podDeduplicator[podUid]; ok {
+				if added := csiMountMonitor.podDeletionQueue.add(podUid); !added {
 					continue // Already queued this pod for deletion - skip in this round
 				}
 				stalePVMounts := getStalePVNames(podUid)
 				if len(stalePVMounts) > 0 {
-					podDeduplicator[podUid] = true
 					staleMountsChannel <- StaleMount{PodUid: podUid, PvNames: stalePVMounts}
 				}
 			}
-			podDeduplicatorMux.Unlock()
 		}
 		time.Sleep(csiMountMonitor.monitoringInterval)
 	}

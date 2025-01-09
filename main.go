@@ -33,10 +33,10 @@ var (
 	csiProvisionerName = flag.String("driver_name", "", "CSI provisioner name (must match the CSI provisioner name)")
 
 	// For monitoring stale pod mounts on node
-	monitoringInterval = flag.Duration("monitoring_interval", 5*time.Second, "monitoring interval")
-	nodeName           = flag.String("node_name", "", "K8S node name")
-	serviceUrl         = flag.String("service_url", "", "Pod killer controller service URL")
-	parallelKills      = flag.Int("parallel_kills", 10, "Kill 'n' pods with stale mount points")
+	monitoringInterval     = flag.Duration("monitoring_interval", 5*time.Second, "monitoring interval")
+	nodeName               = flag.String("node_name", "", "K8S node name")
+	serviceUrl             = flag.String("service_url", "", "Pod killer controller service URL")
+	parallelKills          = flag.Int("parallel_kills", 10, "Kill 'n' pods with stale mount points")
 )
 
 func main() {
@@ -96,12 +96,13 @@ func main() {
 		klog.Infof("Start monitoring of stale pod mounts every %s on node %s and use %s to resolve pod name/namespace",
 			*monitoringInterval, *nodeName, *serviceUrl)
 		monitor := &CsiMountMonitor{
-			clientSet:          clientset,
-			csiDriverName:      *csiProvisionerName,
-			nodeName:           *nodeName,
-			monitoringInterval: *monitoringInterval,
-			controller_url:     *serviceUrl,
-			parallelKills:      *parallelKills,
+			clientSet:              clientset,
+			csiDriverName:          *csiProvisionerName,
+			nodeName:               *nodeName,
+			monitoringInterval:     *monitoringInterval,
+			controller_url:         *serviceUrl,
+			parallelKills:          *parallelKills,
+			podDeletionQueue:       NewPodDeletionQueue(),
 		}
 		monitor.Run()
 	} else {
