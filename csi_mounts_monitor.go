@@ -181,12 +181,21 @@ func (csiMountMonitor *CsiMountMonitor) walkAndDetectStaleMounts(staleMountsChan
 			klog.Errorf("Failed listing kubelet pod mounts due to %s", err)
 		} else {
 			for _, podUid := range pods {
-				if added := csiMountMonitor.podDeletionQueue.add(podUid); !added {
-					continue // Already queued this pod for deletion - skip in this round
-				}
 				stalePVMounts := getStalePVNames(podUid)
 				if len(stalePVMounts) > 0 {
+					if added := csiMountMonitor.podDeletionQueue.add(podUid); !added {
+						// Having entry in this queue does not mean we delete the pod, we do not have enough
+						// information to know if pod has Quobyte volumes mounted. We know this information
+						// once we resolve pods using cache_api.go
+						klog.V(5).Infof("Pod %s already exists in deletion queue. Not adding again.", podUid)
+						continue // Already queued this pod for deletion - skip in this round
+					}
+					klog.Infof("Found pod %s with stale mount path(s) %s. Pod will be deleted if mount path is backed by Quobyte volume.",
+						podUid,
+						stalePVMounts)
 					staleMountsChannel <- StaleMount{PodUid: podUid, PvNames: stalePVMounts}
+				} else {
+					klog.V(2).Infof("No stale mounts found for the pod %s", podUid)
 				}
 			}
 		}
