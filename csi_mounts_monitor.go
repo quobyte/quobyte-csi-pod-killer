@@ -232,13 +232,10 @@ func getStalePVNames(podUid string) []string {
 		quobyteCsiVolumePath := fmt.Sprintf(KUBELET_POD_CSI_PVC_MOUNT, podUid, csiPVName)
 		if _, err = unix.Getxattr(quobyteCsiVolumePath, QUOBYTE_CLIENT_X_ATTR, xattr_buf); err != nil {
 			klog.V(2).Infof("Encountered error %d executing stat on %s", err.(syscall.Errno), quobyteCsiVolumePath)
-			if err.(syscall.Errno) == unix.ENOTCONN || err.(syscall.Errno) == unix.ENOENT {
+			if err.(syscall.Errno) == unix.ENOTCONN {
 				stalePvNames = append(stalePvNames, csiPVName)
 			}
 		}
-	}
-	if len(stalePvNames) > 0 {
-		klog.Infof("PVs %v are stale in the path %s", stalePvNames, podVolumesPath)
 	}
 	return stalePvNames
 }
