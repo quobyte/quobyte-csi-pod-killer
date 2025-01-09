@@ -71,7 +71,7 @@ type CsiMountMonitor struct {
 func (csiMountMonitor *CsiMountMonitor) Run() {
 	// Keep Queue >= 2 * podUidResolveBatchSize so that we batch resolve pod uid calls
 	staleMountsChannel := make(chan StaleMount, csiMountMonitor.podUidResolveBatchSize*3)
-	resolvedPodsChannel := make(chan ResolvedPod, csiMountMonitor.parallelKills*3)
+	resolvedPodsChannel := make(chan ResolvedPodWithStaleMounts, csiMountMonitor.parallelKills*3)
 	go csiMountMonitor.walkAndDetectStaleMounts(staleMountsChannel)
 	go csiMountMonitor.resolvePodsWithStaleMounts(staleMountsChannel, resolvedPodsChannel)
 	for i := 0; i < csiMountMonitor.parallelKills; i++ {
@@ -82,23 +82,31 @@ func (csiMountMonitor *CsiMountMonitor) Run() {
 	wg.Wait()
 }
 
-func (csiMountMonitor *CsiMountMonitor) deletePodWithStaleMount(resolvedPodsChannel <-chan ResolvedPod) {
-	for pod := range resolvedPodsChannel {
-		klog.Infof("Deleting pod %s/%s with uid %s", pod.Namespace, pod.Name, pod.Uid)
+func (csiMountMonitor *CsiMountMonitor) deletePodWithStaleMount(resolvedPodsChannel <-chan ResolvedPodWithStaleMounts) {
+	for resolvedPodAndMounts := range resolvedPodsChannel {
+		podNamespace := resolvedPodAndMounts.ResolvedPod.Namespace
+		podName := resolvedPodAndMounts.ResolvedPod.Name
+		podUid := resolvedPodAndMounts.ResolvedPod.Uid
+		klog.Infof("Deleting pod %s/%s with uid %s due to stale mounts %s",
+			podNamespace,
+			podName,
+			podUid,
+			resolvedPodAndMounts.StaleMount.PvNames,
+		)
 		gracePeriod := int64(0)
-		if err := csiMountMonitor.clientSet.CoreV1().Pods(pod.Namespace).Delete(context.Background(), pod.Name, metav1.DeleteOptions{
+		if err := csiMountMonitor.clientSet.CoreV1().Pods(podNamespace).Delete(context.Background(), podName, metav1.DeleteOptions{
 			GracePeriodSeconds: &gracePeriod,
-			Preconditions:      &metav1.Preconditions{UID: (*types.UID)(&pod.Uid)},
+			Preconditions:      &metav1.Preconditions{UID: (*types.UID)(&podUid)},
 		}); err != nil {
-			klog.Errorf("Unable to delete pod %s/%s (uid: %s) due to %v", pod.Namespace, pod.Name, pod.Uid, err)
+			klog.Errorf("Unable to delete pod %s/%s (uid: %s) due to %v", podNamespace, podName, podUid, err)
 		}
-		csiMountMonitor.podDeletionQueue.delete(pod.Uid)
+		csiMountMonitor.podDeletionQueue.delete(podUid)
 	}
 }
 
 func (csiMountMonitor *CsiMountMonitor) resolvePodsWithStaleMounts(
 	staleMountsChannel <-chan StaleMount,
-	resolvedPodsChannel chan<- ResolvedPod) {
+	resolvedPodsChannel chan<- ResolvedPodWithStaleMounts) {
 	for staleMount := range staleMountsChannel { // Blocks if no elements
 		batch := make([]StaleMount, 0, csiMountMonitor.podUidResolveBatchSize)
 		batch = append(batch, staleMount)
@@ -122,8 +130,8 @@ func (csiMountMonitor *CsiMountMonitor) resolvePodsWithStaleMounts(
 		} else {
 			resolvedPodUids := make(map[string]bool)
 			for _, pod := range resolvedPods.Pods {
-				klog.Infof("Resolved pod uid %s to %s/%s", pod.Uid, pod.Namespace, pod.Name)
-				resolvedPodsChannel <- pod
+				klog.V(2).Infof("Resolved pod uid %s to %s/%s", pod.Uid, pod.Namespace, pod.Name)
+				resolvedPodsChannel <- ResolvedPodWithStaleMounts{pod, staleMount}
 				resolvedPodUids[pod.Uid] = true
 			}
 			if len(resolvedPodUids) == 0 {
