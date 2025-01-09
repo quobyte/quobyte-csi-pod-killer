@@ -36,6 +36,7 @@ var (
 	monitoringInterval     = flag.Duration("monitoring_interval", 5*time.Second, "monitoring interval")
 	nodeName               = flag.String("node_name", "", "K8S node name")
 	serviceUrl             = flag.String("service_url", "", "Pod killer controller service URL")
+	podUidResolveBatchSize = flag.Int("pod_lookup_batch_size", 10, "Batch size for pod uid resolution")
 	parallelKills          = flag.Int("parallel_kills", 10, "Kill 'n' pods with stale mount points")
 )
 
@@ -102,6 +103,7 @@ func main() {
 			monitoringInterval:     *monitoringInterval,
 			controller_url:         *serviceUrl,
 			parallelKills:          *parallelKills,
+			podUidResolveBatchSize: *podUidResolveBatchSize,
 			podDeletionQueue:       NewPodDeletionQueue(),
 		}
 		monitor.Run()

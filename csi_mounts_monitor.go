@@ -24,9 +24,10 @@ const (
 	// Example /var/lib/kubelet/pods/<pod-uid>/volumes/kubernetes.io~csi/
 	KUBELET_POD_CSI_MOUNTS = KUBELET_PODS_MOUNT_PATH + "%s/volumes/kubernetes.io~csi/"
 	// /var/lib/kubelet/pods/<pod-uid>/volumes/kubernetes.io~csi/<pv-name>/mount
-	KUBELET_POD_CSI_PVC_MOUNT = KUBELET_POD_CSI_MOUNTS + "%s/mount"
-	QUOBYTE_CLIENT_X_ATTR     = "quobyte.statuspage_port"
-	CLIENT_X_ATTR_VALUE_SIZE  = 100
+	KUBELET_POD_CSI_PVC_MOUNT  = KUBELET_POD_CSI_MOUNTS + "%s/mount"
+	QUOBYTE_CLIENT_X_ATTR      = "quobyte.statuspage_port"
+	CLIENT_X_ATTR_VALUE_SIZE   = 100
+	TOTAL_BATCHING_WAIT_BUDGET = 1000 * time.Millisecond
 )
 
 type podDeletionQueue struct {
@@ -98,16 +99,19 @@ func (csiMountMonitor *CsiMountMonitor) deletePodWithStaleMount(resolvedPodsChan
 func (csiMountMonitor *CsiMountMonitor) resolvePodsWithStaleMounts(
 	staleMountsChannel <-chan StaleMount,
 	resolvedPodsChannel chan<- ResolvedPod) {
-	batch := make([]StaleMount, 0, csiMountMonitor.podUidResolveBatchSize)
 	for staleMount := range staleMountsChannel { // Blocks if no elements
+		batch := make([]StaleMount, 0, csiMountMonitor.podUidResolveBatchSize)
 		batch = append(batch, staleMount)
-	batching:
+		currentBatchingDelay := 0 * time.Millisecond
 		for i := 1; i < csiMountMonitor.podUidResolveBatchSize; i++ {
 			select { // non-blocking with default
 			case staleMount := <-staleMountsChannel:
 				batch = append(batch, staleMount)
 			default:
-				break batching
+				if currentBatchingDelay < TOTAL_BATCHING_WAIT_BUDGET {
+					time.Sleep(100 * time.Millisecond)
+					currentBatchingDelay += 100 * time.Millisecond
+				}
 			}
 		}
 		if resolvedPods, err := csiMountMonitor.resolvePods(batch); err != nil {
@@ -121,6 +125,9 @@ func (csiMountMonitor *CsiMountMonitor) resolvePodsWithStaleMounts(
 				klog.Infof("Resolved pod uid %s to %s/%s", pod.Uid, pod.Namespace, pod.Name)
 				resolvedPodsChannel <- pod
 				resolvedPodUids[pod.Uid] = true
+			}
+			if len(resolvedPodUids) == 0 {
+				klog.Infof("No pods with Quobyte volume as stale mount points")
 			}
 			for _, staleMount := range batch { // pod killer cache may not have entry yet
 				if _, ok := resolvedPodUids[staleMount.PodUid]; !ok {
