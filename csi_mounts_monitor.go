@@ -185,6 +185,7 @@ func (csiMountMonitor *CsiMountMonitor) resolvePods(staleMounts []StaleMount) (R
 
 func (csiMountMonitor *CsiMountMonitor) walkAndDetectStaleMounts(staleMountsChannel chan<- StaleMount) {
 	for {
+		podsWithStaleMountsCounter := 0
 		if pods, err := getChildDirectoryNames(KUBELET_PODS_MOUNT_PATH); err != nil {
 			klog.Errorf("Failed listing kubelet pod mounts due to %s", err)
 		} else {
@@ -198,6 +199,7 @@ func (csiMountMonitor *CsiMountMonitor) walkAndDetectStaleMounts(staleMountsChan
 						klog.V(5).Infof("Pod %s already exists in deletion queue. Not adding again.", podUid)
 						continue // Already queued this pod for deletion - skip in this round
 					}
+					podsWithStaleMountsCounter += 1
 					klog.Infof("Found pod %s with stale mount path(s) %s. Pod will be deleted if mount path is backed by Quobyte volume.",
 						podUid,
 						stalePVMounts)
@@ -206,6 +208,11 @@ func (csiMountMonitor *CsiMountMonitor) walkAndDetectStaleMounts(staleMountsChan
 					klog.V(2).Infof("No stale mounts found for the pod %s", podUid)
 				}
 			}
+		}
+		if podsWithStaleMountsCounter == 0 {
+			klog.Infof("No pods with stale mounts found during the monitoring run.")
+		} else {
+			klog.Infof("Found %d pods with stale mounts during the monitoring run.", podsWithStaleMountsCounter)
 		}
 		time.Sleep(csiMountMonitor.monitoringInterval)
 	}
