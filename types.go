@@ -20,3 +20,8 @@ type ResolvedPod struct {
 type ResolvePodsResponse struct {
 	Pods []ResolvedPod `json:"pods"`
 }
+
+type ResolvedPodWithStaleMounts struct {
+	ResolvedPod ResolvedPod
+	StaleMount  StaleMount
+}

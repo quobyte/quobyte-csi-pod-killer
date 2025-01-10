@@ -24,13 +24,38 @@ const (
 	// Example /var/lib/kubelet/pods/<pod-uid>/volumes/kubernetes.io~csi/
 	KUBELET_POD_CSI_MOUNTS = KUBELET_PODS_MOUNT_PATH + "%s/volumes/kubernetes.io~csi/"
 	// /var/lib/kubelet/pods/<pod-uid>/volumes/kubernetes.io~csi/<pv-name>/mount
-	KUBELET_POD_CSI_PVC_MOUNT = KUBELET_POD_CSI_MOUNTS + "%s/mount"
-	QUOBYTE_CLIENT_X_ATTR = "quobyte.statuspage_port"
-	CLIENT_X_ATTR_VALUE_SIZE = 100
+	KUBELET_POD_CSI_PVC_MOUNT  = KUBELET_POD_CSI_MOUNTS + "%s/mount"
+	QUOBYTE_CLIENT_X_ATTR      = "quobyte.statuspage_port"
+	CLIENT_X_ATTR_VALUE_SIZE   = 100
+	TOTAL_BATCHING_WAIT_BUDGET = 1000 * time.Millisecond
 )
 
-var podDeduplicatorMux sync.Mutex
-var podDeduplicator map[string]bool
+type podDeletionQueue struct {
+	podsMux sync.Mutex
+	pods    map[string]bool
+}
+
+func NewPodDeletionQueue() *podDeletionQueue {
+	return &podDeletionQueue{
+		pods: make(map[string]bool),
+	}
+}
+
+func (podCache *podDeletionQueue) add(podUid string) bool {
+	podCache.podsMux.Lock()
+	defer podCache.podsMux.Unlock()
+	if _, ok := podCache.pods[podUid]; ok {
+		return false // not added
+	}
+	podCache.pods[podUid] = true
+	return true
+}
+
+func (podCache *podDeletionQueue) delete(podUid string) {
+	podCache.podsMux.Lock()
+	defer podCache.podsMux.Unlock()
+	delete(podCache.pods, podUid)
+}
 
 type CsiMountMonitor struct {
 	csiDriverName          string
@@ -40,13 +65,13 @@ type CsiMountMonitor struct {
 	monitoringInterval     time.Duration
 	parallelKills          int
 	podUidResolveBatchSize int
+	podDeletionQueue       *podDeletionQueue
 }
 
 func (csiMountMonitor *CsiMountMonitor) Run() {
-	podDeduplicator = make(map[string]bool)
 	// Keep Queue >= 2 * podUidResolveBatchSize so that we batch resolve pod uid calls
 	staleMountsChannel := make(chan StaleMount, csiMountMonitor.podUidResolveBatchSize*3)
-	resolvedPodsChannel := make(chan ResolvedPod, csiMountMonitor.parallelKills*3)
+	resolvedPodsChannel := make(chan ResolvedPodWithStaleMounts, csiMountMonitor.parallelKills*3)
 	go csiMountMonitor.walkAndDetectStaleMounts(staleMountsChannel)
 	go csiMountMonitor.resolvePodsWithStaleMounts(staleMountsChannel, resolvedPodsChannel)
 	for i := 0; i < csiMountMonitor.parallelKills; i++ {
@@ -57,59 +82,67 @@ func (csiMountMonitor *CsiMountMonitor) Run() {
 	wg.Wait()
 }
 
-func (csiMountMonitor *CsiMountMonitor) deletePodWithStaleMount(resolvedPodsChannel <-chan ResolvedPod) {
-	for pod := range resolvedPodsChannel {
-		klog.Infof("Deleting pod %s/%s with uid %s", pod.Namespace, pod.Name, pod.Uid)
+func (csiMountMonitor *CsiMountMonitor) deletePodWithStaleMount(resolvedPodsChannel <-chan ResolvedPodWithStaleMounts) {
+	for resolvedPodAndMounts := range resolvedPodsChannel {
+		podNamespace := resolvedPodAndMounts.ResolvedPod.Namespace
+		podName := resolvedPodAndMounts.ResolvedPod.Name
+		podUid := resolvedPodAndMounts.ResolvedPod.Uid
+		klog.Infof("Deleting pod %s/%s with uid %s due to stale mounts %s",
+			podNamespace,
+			podName,
+			podUid,
+			resolvedPodAndMounts.StaleMount.PvNames,
+		)
 		gracePeriod := int64(0)
-		if err := csiMountMonitor.clientSet.CoreV1().Pods(pod.Namespace).Delete(context.Background(), pod.Name, metav1.DeleteOptions{
+		if err := csiMountMonitor.clientSet.CoreV1().Pods(podNamespace).Delete(context.Background(), podName, metav1.DeleteOptions{
 			GracePeriodSeconds: &gracePeriod,
-			Preconditions:      &metav1.Preconditions{UID: (*types.UID)(&pod.Uid)},
+			Preconditions:      &metav1.Preconditions{UID: (*types.UID)(&podUid)},
 		}); err != nil {
-			klog.Errorf("Unable to delete pod %s/%s (uid: %s) due to %v", pod.Namespace, pod.Name, pod.Uid, err)
+			klog.Errorf("Unable to delete pod %s/%s (uid: %s) due to %v", podNamespace, podName, podUid, err)
 		}
-		podDeduplicatorMux.Lock()
-		delete(podDeduplicator, pod.Uid)
-		podDeduplicatorMux.Unlock()
+		csiMountMonitor.podDeletionQueue.delete(podUid)
 	}
 }
 
 func (csiMountMonitor *CsiMountMonitor) resolvePodsWithStaleMounts(
 	staleMountsChannel <-chan StaleMount,
-	resolvedPodsChannel chan<- ResolvedPod) {
-	batch := make([]StaleMount, 0, csiMountMonitor.podUidResolveBatchSize)
+	resolvedPodsChannel chan<- ResolvedPodWithStaleMounts) {
 	for staleMount := range staleMountsChannel { // Blocks if no elements
+		batch := make([]StaleMount, 0, csiMountMonitor.podUidResolveBatchSize)
 		batch = append(batch, staleMount)
-	batching:
+		currentBatchingDelay := 0 * time.Millisecond
 		for i := 1; i < csiMountMonitor.podUidResolveBatchSize; i++ {
 			select { // non-blocking with default
 			case staleMount := <-staleMountsChannel:
 				batch = append(batch, staleMount)
 			default:
-				break batching
+				if currentBatchingDelay < TOTAL_BATCHING_WAIT_BUDGET {
+					time.Sleep(100 * time.Millisecond)
+					currentBatchingDelay += 100 * time.Millisecond
+				}
 			}
 		}
 		if resolvedPods, err := csiMountMonitor.resolvePods(batch); err != nil {
-			podDeduplicatorMux.Lock()
-			for _, staleMount := range batch {  // remove and let it be requeued for resolution
-				delete(podDeduplicator, staleMount.PodUid)
+			for _, staleMount := range batch { // remove and let it be requeued for resolution
+				csiMountMonitor.podDeletionQueue.delete(staleMount.PodUid)
 			}
-			podDeduplicatorMux.Unlock()
 			klog.Errorf("Could not resolve pod(s) to name/namespace due to %s. Will retry later again.", err)
 		} else {
 			resolvedPodUids := make(map[string]bool)
 			for _, pod := range resolvedPods.Pods {
-				klog.Infof("Resolved pod uid %s to %s/%s", pod.Uid, pod.Namespace, pod.Name)
-				resolvedPodsChannel <- pod
+				klog.V(2).Infof("Resolved pod uid %s to %s/%s", pod.Uid, pod.Namespace, pod.Name)
+				resolvedPodsChannel <- ResolvedPodWithStaleMounts{pod, staleMount}
 				resolvedPodUids[pod.Uid] = true
 			}
-			podDeduplicatorMux.Lock()
-			for _, staleMount := range batch {
+			if len(resolvedPodUids) == 0 {
+				klog.Infof("No pods with Quobyte volume as stale mount points")
+			}
+			for _, staleMount := range batch { // pod killer cache may not have entry yet
 				if _, ok := resolvedPodUids[staleMount.PodUid]; !ok {
 					// Pod was not resolved, so let it be requeued again
-					delete(podDeduplicator, staleMount.PodUid)
+					csiMountMonitor.podDeletionQueue.delete(staleMount.PodUid)
 				}
 			}
-			podDeduplicatorMux.Unlock()
 		}
 	}
 }
@@ -152,21 +185,34 @@ func (csiMountMonitor *CsiMountMonitor) resolvePods(staleMounts []StaleMount) (R
 
 func (csiMountMonitor *CsiMountMonitor) walkAndDetectStaleMounts(staleMountsChannel chan<- StaleMount) {
 	for {
+		podsWithStaleMountsCounter := 0
 		if pods, err := getChildDirectoryNames(KUBELET_PODS_MOUNT_PATH); err != nil {
 			klog.Errorf("Failed listing kubelet pod mounts due to %s", err)
 		} else {
-			podDeduplicatorMux.Lock()
 			for _, podUid := range pods {
-				if _, ok := podDeduplicator[podUid]; ok {
-					continue // Already queued this pod for deletion - skip in this round
-				}
 				stalePVMounts := getStalePVNames(podUid)
 				if len(stalePVMounts) > 0 {
-					podDeduplicator[podUid] = true
+					if added := csiMountMonitor.podDeletionQueue.add(podUid); !added {
+						// Having entry in this queue does not mean we delete the pod, we do not have enough
+						// information to know if pod has Quobyte volumes mounted. We know this information
+						// once we resolve pods using cache_api.go
+						klog.V(5).Infof("Pod %s already exists in deletion queue. Not adding again.", podUid)
+						continue // Already queued this pod for deletion - skip in this round
+					}
+					podsWithStaleMountsCounter += 1
+					klog.Infof("Found pod %s with stale mount path(s) %s. Pod will be deleted if mount path is backed by Quobyte volume.",
+						podUid,
+						stalePVMounts)
 					staleMountsChannel <- StaleMount{PodUid: podUid, PvNames: stalePVMounts}
+				} else {
+					klog.V(2).Infof("No stale mounts found for the pod %s", podUid)
 				}
 			}
-			podDeduplicatorMux.Unlock()
+		}
+		if podsWithStaleMountsCounter == 0 {
+			klog.Infof("No pods with stale mounts found during the monitoring run.")
+		} else {
+			klog.Infof("Found %d pods with stale mounts during the monitoring run.", podsWithStaleMountsCounter)
 		}
 		time.Sleep(csiMountMonitor.monitoringInterval)
 	}
@@ -193,13 +239,10 @@ func getStalePVNames(podUid string) []string {
 		quobyteCsiVolumePath := fmt.Sprintf(KUBELET_POD_CSI_PVC_MOUNT, podUid, csiPVName)
 		if _, err = unix.Getxattr(quobyteCsiVolumePath, QUOBYTE_CLIENT_X_ATTR, xattr_buf); err != nil {
 			klog.V(2).Infof("Encountered error %d executing stat on %s", err.(syscall.Errno), quobyteCsiVolumePath)
-			if err.(syscall.Errno) == unix.ENOTCONN || err.(syscall.Errno) == unix.ENOENT {
+			if err.(syscall.Errno) == unix.ENOTCONN {
 				stalePvNames = append(stalePvNames, csiPVName)
 			}
 		}
-	}
-	if len(stalePvNames) > 0 {
-		klog.Infof("PVs %v are stale in the path %s", stalePvNames, podVolumesPath)
 	}
 	return stalePvNames
 }
