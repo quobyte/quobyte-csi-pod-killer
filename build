@@ -1,12 +1,11 @@
-#!/bin/bash -x
+#!/bin/bash
+
+set -euxo pipefail
 
 DEFAULT_CONTAINER_URL_BASE="quay.io/quobyte/pod-killer"
 CONTAINER_URL_BASE="${CONTAINER_URL_BASE:-$DEFAULT_CONTAINER_URL_BASE}"
 BUILD_MODE="${BUILD_MODE:-"RELEASE"}"
 
-die() {
-  exit 1
-}
 
 container_build_and_push(){
     if [[ -z "${CONTAINER_URL_BASE}" ]]; then
@@ -19,12 +18,10 @@ container_build_and_push(){
     git tag "${VERSION}"
     git push origin master --tags
     IMAGE="${CONTAINER_URL_BASE}:${VERSION}"
-    echo "Building docker image and push to ${IMAGE}"
-    sudo docker build -t quobyte-csi -f Dockerfile .
-    sudo docker run -it quobyte-csi
-    CSI_RUN_ID="$(sudo docker ps -l | grep 'quobyte-csi' | awk '{print $1}')"
-    echo "Pushing $CSI_RUN_ID to ${IMAGE}"
-    sudo docker commit "$CSI_RUN_ID" "$IMAGE"
+    echo "Building docker image and pushing it to ${IMAGE}"
+    echo "Building docker image"
+    sudo docker build -t $IMAGE -f Dockerfile .
+    echo "Pushing built image to ${IMAGE}"
     sudo docker push "$IMAGE"
     push_succeeded="$?"
     if [[ ${push_succeeded} -ne 0 ]]; then
@@ -34,45 +31,48 @@ container_build_and_push(){
     fi
 }
 
-if [[ "$1" = '-h' || "$1" = '--help' ]]; then
+print_usage(){
   echo './build                     Builds the executable'
   echo './build container <tag>"    Builds and pushes the container to repo'
   echo '                                         for the release'
   echo "Example: ./build container v0.1.0"
-  exit 0
+}
+
+if [[ "$#" -lt 1 || "$1" = '-h' || "$1" = '--help' ]]; then
+  print_usage
 else
   echo 'Building executable'
   binary="pod_killer"
   debug_binary="${binary}_debug"
   debug_symbols_file="${binary}.debug"
-  rm $binary $debug_binary $debug_symbols_file >> /dev/null
-  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $debug_binary || die
+  rm $binary $debug_binary $debug_symbols_file &> /dev/null || true
+  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $debug_binary
   cp $debug_binary $binary
   if [[ "${BUILD_MODE}" = 'DEBUG' ]]; then
     # nothing to do
     :
   elif [[ "${BUILD_MODE}" = 'RELEASE' ]]; then
     # extract debug symbols
-    objcopy --only-keep-debug "${debug_binary}" $debug_symbols_file || die
-    # remove all symbols and relocation information
-    objcopy --strip-all $binary || die
-    objcopy --add-gnu-debuglink=$debug_symbols_file $binary || die
+    objcopy --only-keep-debug $debug_binary $debug_symbols_file
+    # remove all symbols and unneeded sections
+    strip --strip-debug --strip-unneeded $binary
+    objcopy --add-gnu-debuglink=$debug_symbols_file $binary
+    rm $debug_binary
   else
     echo "Error: unknown compilation build mode $BUILD_MODE"
-    die
+    exit 1
   fi
-  rm $debug_binary
   echo "Build successful in mode: $BUILD_MODE"
   if [[ "$1" == "container" ]]; then
     container_build_and_push $2
   fi
   echo "Built binary with mode: $BUILD_MODE"
   if [[ "${BUILD_MODE}" = 'RELEASE' ]]; then
-    release_zip="$binary.tar.gz"
-    rm $release_zip
-    tar -czf $release_zip $binary $debug_symbols_file
+    release_tarball="$binary.tar.gz"
+    rm $release_tarball &> /dev/null || true
+    tar -czf $release_tarball $binary $debug_symbols_file
     echo
     # should be attached to release so that we can have debug symbols
-    echo "IMPORTANT: Create release on source repo and attach the $release_zip"
+    echo "IMPORTANT: Create release on source repo and attach the $release_tarball"
   fi
 fi
