@@ -1,7 +1,12 @@
-#!/bin/bash
+#!/bin/bash -x
 
 DEFAULT_CONTAINER_URL_BASE="quay.io/quobyte/pod-killer"
 CONTAINER_URL_BASE="${CONTAINER_URL_BASE:-$DEFAULT_CONTAINER_URL_BASE}"
+BUILD_MODE="${BUILD_MODE:-"RELEASE"}"
+
+die() {
+  exit 1
+}
 
 container_build_and_push(){
     if [[ -z "${CONTAINER_URL_BASE}" ]]; then
@@ -29,7 +34,6 @@ container_build_and_push(){
     fi
 }
 
-
 if [[ "$1" = '-h' || "$1" = '--help' ]]; then
   echo './build                     Builds the executable'
   echo './build container <tag>"    Builds and pushes the container to repo'
@@ -38,15 +42,37 @@ if [[ "$1" = '-h' || "$1" = '--help' ]]; then
   exit 0
 else
   echo 'Building executable'
-  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o pod_killer
-  build_success="$?"
-  if [[ ${build_success} -eq 0 ]]; then
-    echo "Build is successful"
+  binary="pod_killer"
+  debug_binary="${binary}_debug"
+  debug_symbols_file="${binary}.debug"
+  rm $binary $debug_binary $debug_symbols_file >> /dev/null
+  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $debug_binary || die
+  cp $debug_binary $binary
+  if [[ "${BUILD_MODE}" = 'DEBUG' ]]; then
+    # nothing to do
+    :
+  elif [[ "${BUILD_MODE}" = 'RELEASE' ]]; then
+    # extract debug symbols
+    objcopy --only-keep-debug "${debug_binary}" $debug_symbols_file || die
+    # remove all symbols and relocation information
+    objcopy --strip-all $binary || die
+    objcopy --add-gnu-debuglink=$debug_symbols_file $binary || die
   else
-    echo "Build FAILURE"
-    exit 1
+    echo "Error: unknown compilation build mode $BUILD_MODE"
+    die
   fi
-  if [[ "${build_success}" -eq 0 && "$1" == "container" ]]; then
+  rm $debug_binary
+  echo "Build successful in mode: $BUILD_MODE"
+  if [[ "$1" == "container" ]]; then
     container_build_and_push $2
+  fi
+  echo "Built binary with mode: $BUILD_MODE"
+  if [[ "${BUILD_MODE}" = 'RELEASE' ]]; then
+    release_zip="$binary.tar.gz"
+    rm $release_zip
+    tar -czf $release_zip $binary $debug_symbols_file
+    echo
+    # should be attached to release so that we can have debug symbols
+    echo "IMPORTANT: Create release on source repo and attach the $release_zip"
   fi
 fi
