@@ -38,7 +38,7 @@ print_usage(){
   echo "Example: ./build container v0.1.0"
 }
 
-if [[ "$#" -lt 1 || "$1" = '-h' || "$1" = '--help' ]]; then
+if [[ "$1" = '-h' || "$1" = '--help' ]]; then
   print_usage
 else
   echo 'Building executable'
