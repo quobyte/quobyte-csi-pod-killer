@@ -1,1 +1,5 @@
+debug-binary/
+debug-binary/*
 pod_killer*
+*.tar.gz
+*.debug
