@@ -4,8 +4,15 @@ set -euxo pipefail
 
 DEFAULT_CONTAINER_URL_BASE="quay.io/quobyte/pod-killer"
 CONTAINER_URL_BASE="${CONTAINER_URL_BASE:-$DEFAULT_CONTAINER_URL_BASE}"
-BUILD_MODE="${BUILD_MODE:-"RELEASE"}"
+BUILD_MODE="${BUILD_MODE:-"release"}"
+# buildx needs load for local testing (vs push to remote)
+LOCAL_IMAGE="${LOCAL_IMAGE:-false}"
 
+DEBUG_BINARY_DIR="./debug-binary"
+APP_NAME="pod_killer"
+
+# Enable docker containerd storage backend to build multi-arch images and load them for tests
+docker info -f '{{ .DriverStatus }}' | grep "io.containerd.snapshotter.v1" > /dev/null 2>&1
 
 container_build_and_push(){
     if [[ -z "${CONTAINER_URL_BASE}" ]]; then
@@ -15,14 +22,23 @@ container_build_and_push(){
     if [[ -z "${VERSION}" || "{$VERSION}" == *\ * ]]; then
       echo "FAILURE: ${VERSION} is not a valid version string. Version must not be empty or should not contain any spaces"
     fi
-    git tag "${VERSION}"
-    git push origin master --tags
+    if [[ "${LOCAL_IMAGE}" = 'false' ]]; then
+      git tag "${VERSION}"
+      git push origin master --tags
+    fi
     IMAGE="${CONTAINER_URL_BASE}:${VERSION}"
     echo "Building docker image and pushing it to ${IMAGE}"
-    echo "Building docker image"
-    sudo docker build -t $IMAGE -f Dockerfile .
-    echo "Pushing built image to ${IMAGE}"
-    sudo docker push "$IMAGE"
+    image_store_option="--push --output type=local,dest=${DEBUG_BINARY_DIR}"
+    if [[ "${LOCAL_IMAGE}" = 'true' ]]; then
+      docker buildx build --platform linux/amd64,linux/arm64 --build-arg BUILD_MODE=$BUILD_MODE \
+      --build-arg APP_NAME=${APP_NAME} -t $IMAGE --load .
+    else
+      docker buildx build --platform linux/amd64,linux/arm64 --build-arg BUILD_MODE=$BUILD_MODE \
+      --build-arg APP_NAME=${APP_NAME} -t $IMAGE --target export \
+      --output type=local,dest=${DEBUG_BINARY_DIR} .
+      docker buildx build --platform linux/amd64,linux/arm64 --build-arg BUILD_MODE=$BUILD_MODE \
+      --build-arg APP_NAME=${APP_NAME} -t $IMAGE --push .
+    fi
     push_succeeded="$?"
     if [[ ${push_succeeded} -ne 0 ]]; then
       echo 'FAILURE: container image ${IMAGE} cannot be pushed'
@@ -38,39 +54,32 @@ print_usage(){
   echo "Example: ./build container v0.1.0"
 }
 
+rm -f "${APP_NAME}.tar.gz"
+rm -rf ${DEBUG_BINARY_DIR}/*
+
+if [[ $# -eq 0 ]]; then
+  docker buildx build --platform linux/amd64,linux/arm64 --build-arg BUILD_MODE=$BUILD_MODE \
+    --build-arg APP_NAME=${APP_NAME} \
+    --output type=local,dest=${DEBUG_BINARY_DIR} .
+  if [[ "${BUILD_MODE}" = 'release' ]]; then
+    echo "Debug symbols are placed under ${DEBUG_BINARY_DIR}"
+  fi
+  exit 0
+fi
+
 if [[ "$1" = '-h' || "$1" = '--help' ]]; then
   print_usage
 else
   echo 'Building executable'
-  binary="pod_killer"
-  debug_binary="${binary}_debug"
-  debug_symbols_file="${binary}.debug"
-  rm $binary $debug_binary $debug_symbols_file &> /dev/null || true
-  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $debug_binary
-  cp $debug_binary $binary
-  if [[ "${BUILD_MODE}" = 'DEBUG' ]]; then
-    # nothing to do
-    :
-  elif [[ "${BUILD_MODE}" = 'RELEASE' ]]; then
-    # extract debug symbols
-    objcopy --only-keep-debug $debug_binary $debug_symbols_file
-    # remove all symbols and unneeded sections
-    strip --strip-debug --strip-unneeded $binary
-    objcopy --add-gnu-debuglink=$debug_symbols_file $binary
-    rm $debug_binary
-  else
-    echo "Error: unknown compilation build mode $BUILD_MODE"
-    exit 1
-  fi
-  echo "Build successful in mode: $BUILD_MODE"
+   echo "Build successful in mode: $BUILD_MODE"
   if [[ "$1" == "container" ]]; then
     container_build_and_push $2
   fi
   echo "Built binary with mode: $BUILD_MODE"
-  if [[ "${BUILD_MODE}" = 'RELEASE' ]]; then
-    release_tarball="$binary.tar.gz"
+  if [[ ${LOCAL_IMAGE} == 'false' && "${BUILD_MODE}" = 'release' ]]; then
+    release_tarball="${APP_NAME}.tar.gz"
     rm $release_tarball &> /dev/null || true
-    tar -czf $release_tarball $binary $debug_symbols_file
+    tar -czf $release_tarball ${DEBUG_BINARY_DIR}
     echo
     # should be attached to release so that we can have debug symbols
     echo "IMPORTANT: Create release on source repo and attach the $release_tarball"
