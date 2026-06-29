@@ -22,7 +22,7 @@ RUN if [ "$BUILD_MODE" = "debug" ]; then \
     else \
       CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
         go build -o /app/${APP_NAME}.unstripped . ; \
-      # Go keeps sufficient info to recover obfusticated strace using abov
+      # Go keeps sufficient info to recover obfuscated strace using above
       # unstripped version.
       CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
         go build -ldflags="-s -w" -o /app/${APP_NAME} . ; \

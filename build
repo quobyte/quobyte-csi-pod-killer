@@ -50,7 +50,7 @@ container_build_and_push(){
 print_usage(){
   echo './build                     Builds the executable'
   echo './build container <tag>"    Builds and pushes the container to repo'
-  echo '                                         for the release'
+  echo '                            for the release'
   echo "Example: ./build container v0.1.0"
 }
 

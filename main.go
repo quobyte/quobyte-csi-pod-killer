@@ -35,13 +35,13 @@ var (
 	// For monitoring stale pod mounts on node
 	monitoringInterval     = flag.Duration("monitoring_interval", 5*time.Second, "monitoring interval")
 	nodeName               = flag.String("node_name", "", "K8S node name")
-	serviceUrl             = flag.String("service_url", "", "Pod killer controller service URL")
+	serviceUrl             = flag.String("service_url", "", "Pod killer cache service URL")
 	podUidResolveBatchSize = flag.Int("pod_lookup_batch_size", 10, "Batch size for pod uid resolution")
 	parallelKills          = flag.Int("parallel_kills", 10, "Kill 'n' pods with stale mount points")
 )
 
 func main() {
-	flag.Func("role", "Driver role (controller or monitor)", func(flagValue string) error {
+	flag.Func("role", "Driver role (cache or monitor)", func(flagValue string) error {
 		if len(flagValue) == 0 {
 			return fmt.Errorf("-role is required")
 		}
